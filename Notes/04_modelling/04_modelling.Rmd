@@ -1,0 +1,125 @@
+---
+title: "04_modelling"
+author: "Joey O'Brien"
+date: "11/5/2021"
+output: html_document
+---
+
+To highlight the machine learning functionality in `spraklyr` he first load in the `okCupid` dataset which consists of 60,000 user profiles from an online dating site.
+
+```{r}
+download.file(
+  "https://github.com/r-spark/okcupid/raw/master/profiles.csv.zip",
+  "okcupid.zip")
+
+unzip("okcupid.zip", exdir = "data")
+unlink("okcupid.zip")
+```
+
+We will try to answer the following question
+
+_Predict whether someone is actively working—that is, not retired, a student, or unemployed._
+
+### exploratory data analysis
+
+Let's load the data into Spark straight away using the `spark_read_csv` function
+
+```{r}
+library(sparklyr)
+library(ggplot2)
+library(dbplot)
+library(dplyr)
+
+sc <- spark_connect(master = "local", version = "2.3")
+
+okc <- spark_read_csv(
+  sc, 
+  "data/profiles.csv", 
+  escape = "\"", 
+  memory = FALSE,
+  options = list(multiline = TRUE)
+) %>%
+  mutate(
+    height = as.numeric(height),
+    income = ifelse(income == "-1", NA, as.numeric(income))
+  ) %>%
+  mutate(sex = ifelse(is.na(sex), "missing", sex)) %>%
+  mutate(drinks = ifelse(is.na(drinks), "missing", drinks)) %>%
+  mutate(drugs = ifelse(is.na(drugs), "missing", drugs)) %>%
+  mutate(job = ifelse(is.na(job), "missing", job))
+```
+```{r}
+glimpse(okc)
+```
+and let's add the response variable we want to use which is about working or not
+
+```{r}
+okc <- okc %>%
+  mutate(
+    not_working = ifelse(job %in% c("student", "unemployed", "retired"), 1 , 0)
+  )
+
+okc %>% 
+  group_by(not_working) %>% 
+  tally()
+```
+
+Let's begin by splitting the dataset into a test and training subset, we could do this a nubmer of ways but let's do the most simple which is just a random split
+
+```{r}
+data_splits <- sdf_random_split(okc, training = 0.8, testing = 0.2, seed = 42)
+okc_train <- data_splits$training
+okc_test <- data_splits$testing
+```
+
+and we can check if there is a class imbalance in out training dataset
+```{r}
+okc_train %>%
+  group_by(not_working) %>%
+  tally() %>%
+  mutate(frac = n / sum(n))
+```
+
+and we can do some initial summary statistics for certain columns using the `sdf_describe` function
+```{r}
+sdf_describe(okc_train, cols = c("age", "income"))
+```
+
+and plot some variables to get a feel for the data
+
+```{r}
+dbplot_histogram(okc_train, age)
+```
+
+_(hmmm kind of heavy tailed...)_
+
+given we are interested in whether the individual is working or not we can look at how this quantity relates to other variables e.g., their religion
+
+```{r}
+prop_data <- okc_train %>%
+  mutate(religion = regexp_extract(religion, "^\\\\w+", 0)) %>% 
+  group_by(religion, not_working) %>%
+  tally() %>%
+  group_by(religion) %>%
+  summarize(
+    count = sum(n),
+    prop = sum(not_working * n) / sum(n)
+  ) %>%
+  mutate(se = sqrt(prop * (1 - prop) / count)) %>%
+  collect()
+
+prop_data
+```
+
+and we can construct a 95% confidence interval about this proportion estimate to get an idea of religions which are more common to be employed/unemployed 
+
+```{r}
+prop_data %>%
+  ggplot(aes(x = religion, y = prop)) + geom_point(size = 2) +
+  geom_errorbar(aes(ymin = prop - 1.96 * se, ymax = prop + 1.96 * se),
+                width = .1) +
+  geom_hline(yintercept = sum(prop_data$prop * prop_data$count) /
+                              sum(prop_data$count)) +
+  labs(y = 'Proportion Unemployed', x = 'Religion')
+```
+
