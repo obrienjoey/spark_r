@@ -1,0 +1,94 @@
+---
+title: "03_analysis"
+author: "Joey O'Brien"
+date: "11/5/2021"
+output: html_document
+---
+
+When using Spark with R the data is stored in the former. We send commands from `R` to Spark which performs analysis within its own system before sending the results only back to `R`.
+
+Let's start by loading a dataset into Spark as before
+
+```{r}
+cars <- copy_to(sc, mtcars)
+```
+
+`R` sends syntax to interact with the SQL side of Spark so for example running
+
+```{r}
+summarize_all(cars, mean)
+```
+makes use of the following SQL query
+
+```{r}
+summarize_all(cars, mean) %>%
+  show_query()
+```
+
+and can do more advanced queries using the `tidyverse` language for example
+
+```{r}
+cars %>%
+  mutate(transmission = ifelse(am == 0, "automatic", "manual")) %>%
+  group_by(transmission) %>%
+  summarise_all(mean)
+```
+
+Of course there are some functions built directly into Spark e.g., the _ml_corr_ function used to calculate correlations
+```{r}
+ml_corr(cars)
+```
+but even then we can just use `R` functionality which which then runs _ml_corr_ in the background after the translation in `sparklyr`
+
+```{r}
+library(corrr)
+correlate(cars, use = "pairwise.complete.obs", method = "pearson") 
+```
+### Visualizations
+
+In `sparklyr` the plotting is performed by all the analysis taking place in Spark and the final plotting part taking place in `R`
+
+```{r}
+library(ggplot2)
+ggplot(aes(as.factor(cyl), mpg), data = mtcars) + geom_col()
+```
+we can also do some data wrangling prior to plotting but we have to collect the wrangled data in `R` prior to plotting
+
+```{r}
+car_group <- cars %>%
+  group_by(cyl) %>%
+  summarise(mpg = sum(mpg, na.rm = TRUE)) %>%
+  collect() %>%
+  print()
+```
+
+```{r}
+ggplot(aes(as.factor(cyl), mpg), data = car_group) + 
+  geom_col(fill = "#999999") + coord_flip()
+```
+Alternatively you can use the `dbplot` package which is built for Spark and can perform both the wrangling and plotting at once
+
+```{r}
+library(dbplot)
+
+cars %>%
+dbplot_histogram(mpg, binwidth = 3) +
+labs(title = "MPG Distribution",
+     subtitle = "Histogram over miles per gallon")
+```
+### Modelling
+
+Just like plotting most modelling in `sparklyr` is performed just like it would be in normal `R` and we'll see more in the next set of notes. Here's just a flavour.
+
+```{r}
+cars %>% 
+  ml_linear_regression(mpg ~ .) %>%
+  summary()
+```
+
+```{r}
+cars %>% 
+  ml_linear_regression(mpg ~ hp + cyl) %>%
+  summary()
+```
+

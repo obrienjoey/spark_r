@@ -1,0 +1,103 @@
+---
+title: "02_getting_started"
+author: "Joey O'Brien"
+date: "11/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load packages
+
+```{r}
+library(sparklyr)
+```
+
+To start with we'll install Spark version 2.3 use the local machine cluster to do initial testing and troubleshooting 
+```{r}
+spark_install("2.3")
+```
+```{r}
+sc <- spark_connect(master = "local")
+```
+
+now we can copy a dataset to the local cluster via
+```{r}
+cars <- copy_to(sc, mtcars)
+cars
+```
+and we can reun standard `tidyverse` commands on this representation of the data on the cluster
+```{r}
+library(dplyr)
+count(cars)
+```
+```{r}
+select(cars, hp, mpg) %>%
+  sample_n(100) %>%
+  collect() %>%
+  plot()
+```
+and perform some initial machine learning algorithms to the data
+```{r}
+model <- ml_linear_regression(cars, mpg ~ hp)
+model
+```
+Using this approach we can then make predictions of out of sample points
+```{r}
+model %>%
+  ml_predict(copy_to(sc, data.frame(hp = 250 + 10 * 1:10))) %>%
+  transmute(hp = hp, mpg = prediction) %>%
+  full_join(select(cars, hp, mpg)) %>%
+  collect() %>%
+  plot()
+```
+we will see more of the machine learning approaches later...
+
+It is possbile to write the data to an external source and also read from this files
+```{r}
+spark_write_csv(cars, "cars.csv")
+cars <- spark_read_csv(sc, "cars.csv")
+```
+
+One of the main strengths of Spark is its ability to _stream_ data and analysis upon it. This allows constant flows of input data to be used e.g., stock data, user tweets,...
+
+For example let's load a file into an input folder
+
+```{r}
+dir.create("input")
+write.csv(mtcars, "input/cars_1.csv", row.names = F)
+```
+
+and do some simple mutations where we only take a subset of columns of this input and write this to an output folder
+
+```{r}
+stream <- stream_read_csv(sc, "input/") %>%
+    select(mpg, cyl, disp) %>%
+    stream_write_csv("output/")
+```
+
+```{r}
+dir("output", pattern = ".csv")
+```
+what is neat about this functionality is that the stream continues in the background so if we add another file to the _input_ folder the exact same output is generated automatically
+
+```{r}
+# Write more data into the stream source
+write.csv(mtcars, "input/cars_2.csv", row.names = F)
+```
+
+as seen here
+
+```{r}
+dir("output", pattern = ".csv")
+```
+
+but of course we should stop this live stream whenever we are finished and disconnect the cluster when done
+
+```{r}
+stream_stop(stream)
+spark_disconnect(sc)
+```
+
